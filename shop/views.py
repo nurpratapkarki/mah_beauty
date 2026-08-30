@@ -1,3 +1,5 @@
+import logging
+
 from django.shortcuts import get_object_or_404
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters, permissions, status, viewsets
@@ -5,7 +7,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from .models import (
-    BlogPost, Cart, CartItem, Category, Order, OrderItem, Product,
+    BlogPost, Cart, CartItem, Category, Order, Product,
     ProductVariant, Review, Wishlist,
 )
 from .serializers import (
@@ -13,6 +15,8 @@ from .serializers import (
     OrderSerializer, ProductSerializer, ProductVariantSerializer,
     ReviewSerializer, WishlistSerializer,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class CategoryViewSet(viewsets.ModelViewSet):
@@ -151,3 +155,4 @@ class BlogPostViewSet(viewsets.ModelViewSet):
     serializer_class = BlogPostSerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
     lookup_field = "slug"
+

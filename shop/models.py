@@ -151,6 +151,8 @@ class CartItem(models.Model):
 
 
 class PaymentMethod(models.TextChoices):
+    FONEPAY = "fonepay", "FonePay"
+    COD = "cod", "Cash on Delivery"
     ESEWA = "esewa", "eSewa"
     KHALTI = "khalti", "Khalti"
     WHATSAPP = "whatsapp", "WhatsApp"
@@ -187,14 +189,24 @@ class Order(models.Model):
     total = models.DecimalField(max_digits=10, decimal_places=2)
     payment_method = models.CharField(max_length=20, choices=PaymentMethod.choices)
 
-    # --- forward-compatible payment gateway fields (unused until integration is live) ---
+    # --- forward-compatible payment gateway fields (populated once gateway integration is live) ---
     gateway_reference = models.CharField(
         max_length=100, blank=True,
-        help_text="Transaction/payment ID from eSewa or Khalti once gateway integration is enabled.",
+        help_text="Transaction/payment ID from the payment gateway (e.g. FonePay trace ID).",
     )
     is_paid = models.BooleanField(
         default=False,
-        help_text="Manually confirmed for WhatsApp/Instagram orders; will be set automatically once gateway integration is live.",
+        help_text="Manually confirmed for COD/WhatsApp/Instagram orders; set automatically for gateway payments.",
+    )
+
+    # --- FonePay dynamic QR tracking fields ---
+    prn = models.CharField(
+        max_length=50, blank=True,
+        help_text="FonePay Payment Reference Number for dynamic-QR transactions.",
+    )
+    payment_status = models.CharField(
+        max_length=20, blank=True,
+        help_text="Last known FonePay payment status (pending, COMPLETED, failed).",
     )
 
     status = models.CharField(max_length=20, choices=OrderStatus.choices, default=OrderStatus.PENDING)
@@ -209,7 +221,11 @@ class Order(models.Model):
 
     @property
     def is_gateway_payment(self):
-        return self.payment_method in (PaymentMethod.ESEWA, PaymentMethod.KHALTI)
+        return self.payment_method in (
+            PaymentMethod.FONEPAY,
+            PaymentMethod.ESEWA,
+            PaymentMethod.KHALTI,
+        )
 
     def can_cancel(self):
         return self.status in (OrderStatus.PENDING, OrderStatus.CONFIRMED)
@@ -221,6 +237,19 @@ class Order(models.Model):
             item.variant.increment_stock(item.quantity)
         self.status = OrderStatus.PENDING  # left as-is for shop owner to re-review; see README
         self.save(update_fields=["status"])
+
+    def mark_fonepay_confirmed(self, gateway_reference, status="COMPLETED"):
+        """Confirm an order after a verified FonePay payment. Idempotent — safe to call when
+        the order is already confirmed/paid."""
+        update_fields = ["is_paid", "payment_status", "status"]
+        self.is_paid = True
+        self.payment_status = status
+        self.status = OrderStatus.CONFIRMED
+        if gateway_reference:
+            self.gateway_reference = gateway_reference
+            update_fields.append("gateway_reference")
+        self.save(update_fields=update_fields)
+
 
 
 class OrderItem(models.Model):

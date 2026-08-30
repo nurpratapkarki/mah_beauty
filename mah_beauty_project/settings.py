@@ -1,14 +1,23 @@
 from pathlib import Path
 
+import environ
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+env = environ.Env(
+    DEBUG=(bool, False),
+    ALLOWED_HOSTS=(list, []),
+    FONEPAY_SANDBOX=(bool, True),
+)
+environ.Env.read_env(BASE_DIR / ".env")
+
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-__CHANGE_ME__'
+SECRET_KEY = env("DJANGO_SECRET_KEY", default="django-insecure-__CHANGE_ME__")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = env("DJANGO_DEBUG", default=False)
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = env("DJANGO_ALLOWED_HOSTS", default=[])
 
 # Application definition
 INSTALLED_APPS = [
@@ -98,6 +107,15 @@ REST_FRAMEWORK = {
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 10,
 }
+
+# ── FonePay Payment Gateway (via .env) ─────────────────────────────────────
+FONEPAY_USERNAME = env("FONEPAY_USERNAME", default="")
+FONEPAY_PASSWORD = env("FONEPAY_PASSWORD", default="")
+FONEPAY_MERCHANT_CODE = env("FONEPAY_MERCHANT_CODE", default="")
+FONEPAY_SECRET_KEY = env("FONEPAY_SECRET_KEY", default="")
+FONEPAY_BASE_URL = env("FONEPAY_BASE_URL", default="")
+FONEPAY_SANDBOX = env("FONEPAY_SANDBOX", default=True)
+
 
 # ── Jazzmin Admin UI ─────────────────────────────────────────────────────────
 JAZZMIN_SETTINGS = {

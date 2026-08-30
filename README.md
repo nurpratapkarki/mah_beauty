@@ -19,10 +19,14 @@ for a more stable target on a small production backend. Verified clean against D
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env          # then fill in real values (see .env.example)
 python3 manage.py migrate
 python3 manage.py createsuperuser
 python3 manage.py runserver
 ```
+
+Environment is read from `.env` (see `.env.example`). Secrets live only in the gitignored
+`.env`, never in versioned source.
 
 Admin panel: `/admin/`
 API root: `/api/`
@@ -49,29 +53,66 @@ API root: `/api/`
 | `/api/wishlists/` | extra action: `mine/` (GET current user's wishlist, POST to add a variant) |
 | `/api/carts/` | extra actions: `mine/` (resolve current user or guest cart), `add_item/`, `remove_item/` |
 | `/api/orders/` | guest checkout allowed; extra actions: `cancel/`, `my_orders/` (authenticated) |
+| `/api/payments/fonepay/qr/` | `POST` — generate a FonePay dynamic QR for an order (see Payment Integration) |
+| `/api/payments/fonepay/status/` | `POST` — check FonePay status and confirm an order |
 | `/api/reviews/` | filter by `product` |
 | `/api/blog/` | lookup by `slug` instead of id |
 
-## Payment Integration — left open by design
+## Payment Integration
 
-Per the current plan, real payment gateway integration (eSewa / Khalti) is **not wired up yet**,
-pending business permissions. The schema was built so this can be switched on later with no
-migration required:
+The backend supports **FonePay dynamic QR** (live gateway) and **Cash on Delivery (COD)**, plus
+the legacy manual channels (WhatsApp / Instagram). eSewa / Khalti remain reserved (not wired).
 
-- `Order.payment_method` already includes `esewa` and `khalti` as valid choices, alongside the
-  currently "live" `whatsapp` and `instagram` methods — the frontend can show eSewa/Khalti as
-  disabled/"Coming Soon" options today.
-- `Order.gateway_reference` (blank by default) is reserved for the provider's transaction/payment
-  ID once a gateway is integrated.
-- `Order.is_paid` (defaults to `False`) is manually set via the admin action **"Mark selected
-  orders as Paid"** for WhatsApp/Instagram orders today. Once gateway integration is live, this
-  should instead be set automatically from the gateway's payment-confirmation webhook/callback.
-- `Order.is_gateway_payment` is a read-only computed property so the frontend/API consumer can
-  tell at a glance whether an order used (or will use) a gateway vs. a manual channel.
+### FonePay Dynamic QR
 
-When you're ready to integrate eSewa/Khalti: add a webhook endpoint that verifies the provider's
-signature, sets `gateway_reference` and `is_paid=True`, and transitions `status` to `confirmed`.
-No changes to existing fields are needed.
+`Order.payment_method` includes `fonepay`. Config is read from `.env` (see `mah_beauty_project/
+settings.py`); nothing secret lives in versioned code.
+
+- `POST /api/payments/fonepay/qr/` — body `{ "order_id": "<uuid>" }`. Validates the order is a
+  `fonepay` payment, not paid, and has a positive total; records the PRN and returns a QR to
+  render.
+  Response: `{ order_id, prn, amount, qr, qr_message, realtime, payment_status }`.
+- `POST /api/payments/fonepay/status/` — body `{ "prn": "<prn>" }`. Queries FonePay and, on
+  `COMPLETED`, sets `is_paid=True`, `gateway_reference=fonepayTraceId`, transitions `status` to
+  `confirmed`. Idempotent — safe to re-check.
+- `POST /api/payments/fonepay/refund/` — body `{ "order_id": "<uuid>", "invoice_number": "...",
+  "invoice_date": "YYYY-MM-DD", "transaction_amount"? }`. Posts a FonePay tax refund for a paid
+  FonePay order (uses `order.gateway_reference` as the trace ID and `order.prn` as the merchant
+  PRN; amount defaults to the order total).
+
+**Tax refund QR generation**: `FonepayClient.generate_qr()` accepts optional `tax_amount` /
+`tax_refund`, which extend the HMAC message (`AMOUNT,PRN,MERCHANT-CODE,REMARKS1,REMARKS2,
+TAXAMOUNT,TAXREFUND`) and add `taxAmount`/`taxRefund` to the request payload. When omitted,
+the fields are not sent.
+
+**Real-time auto-verification**: when FonePay returns a `thirdpartyQrWebSocketUrl` on QR
+generation, the backend opens that socket in a background thread and listens for
+`transactionStatus` messages. On `paymentSuccess` it cross-checks against
+`thirdPartyDynamicQrGetStatus` and confirms the order automatically — no frontend polling
+needed. The status endpoint remains as a fallback. Real-time monitoring requires the
+`websockets` package (a runtime dependency).
+
+The FonePay integration lives in a self-contained `shop/payments/` module — client, config,
+errors, shared domain helpers (`get_client`, `confirm_paid_order`, `is_fonepay_payment`, etc.),
+realtime monitor, and dedicated API views — fully separated from `shop/views.py`.
+
+### Cash on Delivery (COD)
+
+`Order.payment_method` includes `cod`. COD orders require no online payment step at checkout and
+are **not** gateway payments. The shop owner marks them paid / confirmed / fulfilled from the
+admin (`/admin/`) using the existing "Mark selected orders as Paid/Confirmed/Fulfilled" actions.
+
+### Payment fields on `Order`
+
+- `gateway_reference` — FonePay trace ID for gateway payments.
+- `is_paid` — auto set `True` on FonePay confirmation; manually via admin for COD/manual orders.
+- `prn` / `payment_status` — FonePay payment reference number and last known status.
+- `is_gateway_payment` — `True` for `fonepay`, `esewa`, `khalti`; `False` for COD and manual.
+
+### Reserved gateways
+
+eSewa and Khalti remain selectable values so the schema supports them later; wiring them would
+reuse the same `gateway_reference` / `is_paid` contract with a small gateway module.
 
 ## Other Assumptions
 
