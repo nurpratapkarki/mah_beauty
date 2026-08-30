@@ -45,18 +45,18 @@ API root: `/api/`
 
 ## API Endpoints
 
-| Endpoint | Notes |
-|---|---|
-| `/api/categories/` | standard CRUD |
-| `/api/products/` | filter by `category`, `is_featured`, `is_best_seller`; search by name/description; extra actions: `featured/`, `best_sellers/` |
-| `/api/variants/` | filter by `product`; search by sku/qr/shade; extra action: `in_stock/` |
-| `/api/wishlists/` | extra action: `mine/` (GET current user's wishlist, POST to add a variant) |
-| `/api/carts/` | extra actions: `mine/` (resolve current user or guest cart), `add_item/`, `remove_item/` |
-| `/api/orders/` | guest checkout allowed; extra actions: `cancel/`, `my_orders/` (authenticated) |
-| `/api/payments/fonepay/qr/` | `POST` — generate a FonePay dynamic QR for an order (see Payment Integration) |
-| `/api/payments/fonepay/status/` | `POST` — check FonePay status and confirm an order |
-| `/api/reviews/` | filter by `product` |
-| `/api/blog/` | lookup by `slug` instead of id |
+| Endpoint                        | Notes                                                                                                                          |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `/api/categories/`              | standard CRUD                                                                                                                  |
+| `/api/products/`                | filter by `category`, `is_featured`, `is_best_seller`; search by name/description; extra actions: `featured/`, `best_sellers/` |
+| `/api/variants/`                | filter by `product`; search by sku/qr/shade; extra action: `in_stock/`                                                         |
+| `/api/wishlists/`               | extra action: `mine/` (GET current user's wishlist, POST to add a variant)                                                     |
+| `/api/carts/`                   | extra actions: `mine/` (resolve current user or guest cart), `add_item/`, `remove_item/`                                       |
+| `/api/orders/`                  | guest checkout allowed; extra actions: `cancel/`, `my_orders/` (authenticated)                                                 |
+| `/api/payments/fonepay/qr/`     | `POST` — generate a FonePay dynamic QR for an order (see Payment Integration)                                                  |
+| `/api/payments/fonepay/status/` | `POST` — check FonePay status and confirm an order                                                                             |
+| `/api/reviews/`                 | filter by `product`                                                                                                            |
+| `/api/blog/`                    | lookup by `slug` instead of id                                                                                                 |
 
 ## Payment Integration
 
@@ -76,7 +76,7 @@ settings.py`); nothing secret lives in versioned code.
   `COMPLETED`, sets `is_paid=True`, `gateway_reference=fonepayTraceId`, transitions `status` to
   `confirmed`. Idempotent — safe to re-check.
 - `POST /api/payments/fonepay/refund/` — body `{ "order_id": "<uuid>", "invoice_number": "...",
-  "invoice_date": "YYYY-MM-DD", "transaction_amount"? }`. Posts a FonePay tax refund for a paid
+"invoice_date": "YYYY-MM-DD", "transaction_amount"? }`. Posts a FonePay tax refund for a paid
   FonePay order (uses `order.gateway_reference` as the trace ID and `order.prn` as the merchant
   PRN; amount defaults to the order total).
 
