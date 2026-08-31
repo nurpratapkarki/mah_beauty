@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 
 from .models import (
@@ -56,14 +58,21 @@ class CartItemSerializer(serializers.ModelSerializer):
 class CartSerializer(serializers.ModelSerializer):
     items = CartItemSerializer(many=True, read_only=True)
     item_count = serializers.SerializerMethodField()
-    total = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+    total = serializers.SerializerMethodField()
 
     class Meta:
         model = Cart
         fields = "__all__"
 
     def get_item_count(self, obj):
-        return obj.items.count()
+        # Use the prefetched items cache instead of a per-cart count() query.
+        return len(obj.items.all())
+
+    def get_total(self, obj):
+        # Iterate the prefetched items so line_total never re-queries; keep the
+        # 2-decimal string output the old DecimalField produced.
+        total = sum((item.line_total for item in obj.items.all()), Decimal("0.00"))
+        return f"{total:.2f}"
 
 
 class OrderItemSerializer(serializers.ModelSerializer):

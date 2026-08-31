@@ -1,5 +1,6 @@
 import logging
 
+from django.db.models import Prefetch
 from django.shortcuts import get_object_or_404
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters, permissions, status, viewsets
@@ -36,7 +37,16 @@ class ProductViewSet(viewsets.ModelViewSet):
         return (
             Product.objects.all()
             .select_related("category")
-            .prefetch_related("variants", "brand_images")
+            .prefetch_related(
+                # Explicit prefetch with select_related: guarantees each variant's
+                # resolved_price (which can fall back to product.base_price) never
+                # triggers a per-variant product lookup.
+                Prefetch(
+                    "variants",
+                    queryset=ProductVariant.objects.select_related("product"),
+                ),
+                "brand_images",
+            )
         )
 
     @action(detail=False, methods=["get"])
@@ -88,7 +98,14 @@ class CartViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.AllowAny]
 
     def get_queryset(self):
-        return Cart.objects.all().prefetch_related("items__variant")
+        # select_related on the variant's product avoids N+1 when CartItem.line_total
+        # reads variant.resolved_price (which falls back to product.base_price).
+        return Cart.objects.all().prefetch_related(
+            Prefetch(
+                "items__variant",
+                queryset=ProductVariant.objects.select_related("product"),
+            )
+        )
 
     @action(detail=False, methods=["get"])
     def mine(self, request):
@@ -98,6 +115,9 @@ class CartViewSet(viewsets.ModelViewSet):
         else:
             session_key = request.query_params.get("session_key", "")
             cart, _ = Cart.objects.get_or_create(session_key=session_key, user=None)
+        # Reload through the optimized queryset so the serializer hits the prefetch
+        # cache (items + variant.product) instead of firing per-item price lookups.
+        cart = self.get_queryset().get(pk=cart.pk)
         return Response(self.get_serializer(cart).data)
 
     @action(detail=True, methods=["post"])
