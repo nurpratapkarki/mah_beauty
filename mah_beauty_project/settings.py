@@ -1,3 +1,4 @@
+from datetime import timedelta
 from pathlib import Path
 
 import environ
@@ -7,7 +8,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 env = environ.Env(
     DEBUG=(bool, False),
     ALLOWED_HOSTS=(list, []),
-    FONEPAY_SANDBOX=(bool, True),
 )
 environ.Env.read_env(BASE_DIR / ".env")
 
@@ -28,11 +28,20 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.sites',
     # Third-party
     'rest_framework',
     'django_filters',
+    'allauth',
+    'allauth.account',
+    'allauth.socialaccount',
+    'allauth.socialaccount.providers.google',
+    'dj_rest_auth',
+    'dj_rest_auth.registration',
+    'rest_framework_simplejwt.token_blacklist',
     # Local
     'shop',
+    'accounts.apps.AccountsConfig',
 ]
 
 MIDDLEWARE = [
@@ -42,6 +51,7 @@ MIDDLEWARE = [
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
+    'allauth.account.middleware.AccountMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
@@ -84,6 +94,55 @@ TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
 
+SITE_ID = 1
+
+AUTH_USER_MODEL = 'accounts.User'
+
+# ── Authentication: custom user + backend chain ────────────────────────────
+# First backend handles username | email | phone login (FR-001); allauth's
+# backend supports its own authentication flows; ModelBackend is the fallback.
+AUTHENTICATION_BACKENDS = [
+    'accounts.backends.EmailOrPhoneUsernameBackend',
+    'allauth.account.auth_backends.AuthenticationBackend',
+    'django.contrib.auth.backends.ModelBackend',
+]
+
+# ── Email (transactional + reset delivery; console in dev) ─────────────────
+# Default mailer uses a console backend in dev. Set DJANGO_EMAIL_BACKEND to an
+# SMTP backend and DJANGO_EMAIL_HOST to a provider host for production.
+# OPTIONS are only populated when a host is configured so the console backend
+# (dev) stays free of unknown-option warnings.
+_mailer_backend = env(
+    "DJANGO_EMAIL_BACKEND",
+    default="django.core.mail.backends.console.EmailBackend",
+)
+
+_mailer_options = {}
+_email_host = env("DJANGO_EMAIL_HOST", default="")
+if _email_host:
+    _mailer_options.update(
+        {
+            "host": _email_host,
+            "port": env("DJANGO_EMAIL_PORT", default=587),
+            "username": env("DJANGO_EMAIL_HOST_USER", default=""),
+            "password": env("DJANGO_EMAIL_HOST_PASSWORD", default=""),
+            "use_tls": env("DJANGO_EMAIL_USE_TLS", default=True),
+        }
+    )
+
+MAILERS = {
+    "default": {
+        "BACKEND": _mailer_backend,
+        "OPTIONS": _mailer_options,
+    }
+}
+DEFAULT_FROM_EMAIL = env("DJANGO_DEFAULT_FROM_EMAIL", default="webmaster@localhost")
+ADMIN_EMAIL = env("DJANGO_ADMIN_EMAIL", default="")
+SPA_PASSWORD_RESET_URL = env(
+    "DJANGO_SPA_PASSWORD_RESET_URL",
+    default="http://localhost:5173/reset-password",
+)
+
 STATIC_URL = 'static/'
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
@@ -97,6 +156,7 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticatedOrReadOnly',
     ],
     'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
         'rest_framework.authentication.SessionAuthentication',
     ],
     'DEFAULT_FILTER_BACKENDS': [
@@ -106,16 +166,70 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 10,
+    # FR-015: backoff-not-lockout anon throttling on auth endpoints.
+    # dj-rest-auth sets throttle_scope="dj_rest_auth" on login/google/reset.
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.ScopedRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'dj_rest_auth': '7/min',
+    },
 }
 
-# ── FonePay Payment Gateway (via .env) ─────────────────────────────────────
-FONEPAY_USERNAME = env("FONEPAY_USERNAME", default="")
-FONEPAY_PASSWORD = env("FONEPAY_PASSWORD", default="")
-FONEPAY_MERCHANT_CODE = env("FONEPAY_MERCHANT_CODE", default="")
-FONEPAY_SECRET_KEY = env("FONEPAY_SECRET_KEY", default="")
-FONEPAY_BASE_URL = env("FONEPAY_BASE_URL", default="")
-FONEPAY_SANDBOX = env("FONEPAY_SANDBOX", default=True)
+# ── JWT (SimpleJWT) + dj-rest-auth ─────────────────────────────────────────
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
+    'AUTH_HEADER_TYPES': ('Bearer',),
+}
 
+REST_AUTH = {
+    'USE_JWT': True,
+    'JWT_AUTH_HTTPONLY': False,
+    'TOKEN_MODEL': None,
+    'OLD_PASSWORD_FIELD_ENABLED': True,
+    'LOGIN_SERIALIZER': 'accounts.serializers.LoginSerializer',
+    'REGISTER_SERIALIZER': 'accounts.serializers.RegisterSerializer',
+    'USER_DETAILS_SERIALIZER': 'accounts.serializers.UserDetailsSerializer',
+    'PASSWORD_RESET_SERIALIZER': 'accounts.serializers.PasswordResetSerializer',
+}
+
+# ── django-allauth: account + socialaccount ────────────────────────────────
+# MVP concession: ACCOUNT_EMAIL_VERIFICATION="none". Tracked follow-up: flip to
+# "mandatory" (and point DJANGO_EMAIL_BACKEND at a real SMTP backend) for
+# production (research.md §9).
+ACCOUNT_SIGNUP_FIELDS = ['email*', 'username*', 'password1*', 'password2*']
+ACCOUNT_UNIQUE_EMAIL = True
+ACCOUNT_EMAIL_VERIFICATION = env(
+    "DJANGO_ACCOUNT_EMAIL_VERIFICATION",
+    default="none",
+)
+
+# FR-008: merge google email onto an existing password account, keep both paths.
+SOCIALACCOUNT_EMAIL_AUTHENTICATION = True
+SOCIALACCOUNT_EMAIL_AUTHENTICATION_AUTO_CONNECT = True
+SOCIALACCOUNT_ADAPTER = 'accounts.adapters.MahBeautySocialAccountAdapter'
+# allauth 65.14 security notice: trusted-proxy/rate-limit settings
+# (ALLAUTH_TRUSTED_ORIGINS + reverse-proxy config) are deployment concerns;
+# app-level auth throttling runs via DRF DEFAULT_THROTTLE_RATES above.
+SOCIALACCOUNT_PROVIDERS = {
+    'google': {
+        'APP': {
+            'client_id': env('GOOGLE_CLIENT_ID', default=''),
+            'secret': env('GOOGLE_CLIENT_SECRET', default=''),
+        },
+    },
+}
+
+# ── eSewa Payment Gateway (via .env) ────────────────────────────────────────
+ESEWA_MERCHANT_CODE = env("ESEWA_MERCHANT_CODE", default="")
+ESEWA_SECRET_KEY = env("ESEWA_SECRET_KEY", default="")
+ESEWA_SANDBOX = env("ESEWA_SANDBOX", default=True)
+ESEWA_BASE_URL = env("ESEWA_BASE_URL", default="")
+ESEWA_SUCCESS_URL = env("ESEWA_SUCCESS_URL", default="")
+ESEWA_FAILURE_URL = env("ESEWA_FAILURE_URL", default="")
 
 # ── Jazzmin Admin UI ─────────────────────────────────────────────────────────
 JAZZMIN_SETTINGS = {

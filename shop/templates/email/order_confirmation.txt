@@ -1,0 +1,20 @@
+Thank you for your order, {{ order.customer_name }}!
+
+Your order #{{ order.id }} has been placed successfully.
+
+ORDER SUMMARY
+-------------
+{% for item in items %}  {{ item.variant.product.name }} ({{ item.variant.shade_or_size }}) x{{ item.quantity }} — {{ item.line_total }}
+{% endfor %}
+Total: {{ total }}
+
+PAYMENT
+-------
+Method: {{ payment_method }}
+
+SHIPPING
+--------
+{{ order.shipping_address_line }}
+{{ order.shipping_city }}{% if order.shipping_landmark %}, {{ order.shipping_landmark }}{% endif %}
+
+{{ site_name }} — thank you for shopping with us.

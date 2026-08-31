@@ -1,0 +1,16 @@
+Payment Received for Order #{{ order.id }}
+
+An order has been paid for and is now confirmed.
+
+Order: #{{ order.id }}
+Customer: {{ order.customer_name }}
+Contact: {{ order.contact_info }}
+Email: {{ order.email|default:"—" }}
+Amount: {{ total }}
+Method: {{ payment_method }}
+Status: Paid / Confirmed
+
+ITEMS
+-----
+{% for item in items %}  {{ item.variant.product.name }} ({{ item.variant.shade_or_size }}) x{{ item.quantity }} — {{ item.line_total }}
+{% endfor %}

@@ -1,10 +1,10 @@
-class FonepayError(Exception):
-    """Base class for all FonePay gateway errors."""
+class EsewaError(Exception):
+    """Base class for all eSewa gateway errors."""
 
 
-class FonepayConfigurationError(FonepayError):
-    """Raised when required FonePay configuration is missing or invalid."""
+class EsewaConfigurationError(EsewaError):
+    """Raised when required eSewa configuration is missing or invalid."""
 
 
-class FonepayUpstreamError(FonepayError):
-    """Raised when FonePay returns an unexpected response or a transport error occurs."""
+class EsewaUpstreamError(EsewaError):
+    """Raised when eSewa returns an unexpected response or a transport error occurs."""

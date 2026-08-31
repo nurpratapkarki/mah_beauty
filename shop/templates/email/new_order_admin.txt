@@ -1,0 +1,18 @@
+New Order Placed
+
+Order #{{ order.id }}
+Customer: {{ order.customer_name }}
+Contact: {{ order.contact_info }}
+Email: {{ order.email|default:"—" }}
+Payment: {{ payment_method }}
+Total: {{ total }}
+
+ITEMS
+-----
+{% for item in items %}  {{ item.variant.product.name }} ({{ item.variant.shade_or_size }}) x{{ item.quantity }} — {{ item.line_total }}
+{% endfor %}
+
+SHIPPING
+--------
+{{ order.shipping_address_line }}
+{{ order.shipping_city }}{% if order.shipping_landmark %}, {{ order.shipping_landmark }}{% endif %}

@@ -1,0 +1,12 @@
+Payment Received, {{ order.customer_name }}!
+
+We've received your payment for order #{{ order.id }}.
+
+Order: #{{ order.id }}
+Amount: {{ total }}
+Method: {{ payment_method }}
+Status: Paid / Confirmed
+
+We're preparing your order and will ship it soon.
+
+{{ site_name }} — thank you for your purchase.

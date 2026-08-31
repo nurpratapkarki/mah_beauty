@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Payment Received</title>
+</head>
+<body style="font-family: Arial, Helvetica, sans-serif; color: #222; max-width: 600px; margin: 0 auto;">
+  <h2 style="color: #c2185b;">Payment Received, {{ order.customer_name }}!</h2>
+  <p>We've received your payment for order <strong>#{{ order.id }}</strong>.</p>
+
+  <table style="width: 100%;">
+    <tr><td><strong>Order</strong></td><td>#{{ order.id }}</td></tr>
+    <tr><td><strong>Amount</strong></td><td>{{ total }}</td></tr>
+    <tr><td><strong>Method</strong></td><td>{{ payment_method }}</td></tr>
+    <tr><td><strong>Status</strong></td><td>Paid / Confirmed</td></tr>
+  </table>
+
+  <p>We're preparing your order and will ship it soon.</p>
+  <p style="margin-top: 32px; color: #888; font-size: 12px;">{{ site_name }} — thank you for your purchase.</p>
+</body>
+</html>

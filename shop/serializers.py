@@ -78,7 +78,6 @@ class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True)
     is_gateway_payment = serializers.BooleanField(read_only=True)
     is_paid = serializers.BooleanField(read_only=True)
-    prn = serializers.CharField(read_only=True)
     payment_status = serializers.CharField(read_only=True)
 
     class Meta:

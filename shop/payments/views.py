@@ -1,25 +1,22 @@
-"""FonePay API views.
-
-FonePay HTTP endpoints live here instead of ``shop/views.py`` so all gatewayspecific request handling stays within ``shop/payments/``. Shared domain logic
-(client construction, PRN generation, order confirmation) is centralised in the
-sibling ``fonepay.py`` module.
-"""
+"""eSewa payment gateway views."""
 
 import logging
 
+import requests as http_requests
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 from rest_framework import permissions, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 
-from ..models import Order
-from .errors import FonepayConfigurationError, FonepayError, FonepayUpstreamError
-from .fonepay import (
-    FAILED, PENDING, SUCCESS, confirm_paid_order, generate_prn, get_client,
-    interpret_status, is_fonepay_payment,
+from ..models import Order, PaymentMethod
+from .config import EsewaConfig
+from .errors import EsewaConfigurationError, EsewaUpstreamError
+from .esewa import (
+    build_esewa_payload,
+    decode_esewa_callback,
+    verify_esewa_signature,
 )
-from .realtime import FonepayRealtimeMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -31,22 +28,14 @@ def _get_order_or_404(order_id):
         raise Http404("Order not found.")
 
 
-def _client_or_error(request):
-    """Build the FonePay client or a friendly error message when unconfigured.
-
-    Returns ``(client, message)``; exactly one of them is non-None.
-    """
-    try:
-        return get_client(), None
-    except FonepayConfigurationError as exc:
-        logger.error("FonePay not configured: %s", exc)
-        return None, "FonePay is not configured."
-
-
 @api_view(["POST"])
 @permission_classes([permissions.AllowAny])
-def fonepay_generate_qr(request):
-    """Generate a FonePay dynamic QR for a valid, unpaid FonePay order."""
+def esewa_initiate(request):
+    """Build and return the signed eSewa payment payload for an order.
+
+    The frontend should auto-submit a hidden form with the returned fields
+    to the ``esewa_url`` endpoint.
+    """
     order_id = request.data.get("order_id")
     if not order_id:
         return Response(
@@ -54,9 +43,9 @@ def fonepay_generate_qr(request):
         )
     order = _get_order_or_404(order_id)
 
-    if not is_fonepay_payment(order):
+    if order.payment_method != PaymentMethod.ESEWA:
         return Response(
-            {"error": "Order is not a FonePay payment."},
+            {"error": "Order is not an eSewa payment."},
             status=status.HTTP_400_BAD_REQUEST,
         )
     if order.is_paid:
@@ -69,145 +58,129 @@ def fonepay_generate_qr(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    client, error_message = _client_or_error(request)
-    if error_message is not None:
+    try:
+        config = EsewaConfig.from_settings()
+    except EsewaConfigurationError as exc:
+        logger.error("eSewa not configured: %s", exc)
         return Response(
-            {"error": error_message}, status=status.HTTP_502_BAD_GATEWAY
+            {"error": "eSewa is not configured."}, status=status.HTTP_502_BAD_GATEWAY
         )
-
-    prn = order.prn or generate_prn(order.id)
-    Order.objects.filter(pk=order.pk).update(prn=prn, payment_status="pending")
 
     try:
-        qr_data = client.generate_qr(
-            amount=str(order.total),
-            prn=prn,
-            remarks1=f"Payment for order {order.id}",
-            remarks2="Mah Beauty",
-        )
-    except FonepayUpstreamError as exc:
-        logger.warning("FonePay QR generation failed for order %s: %s", order.id, exc)
-        Order.objects.filter(pk=order.pk).update(payment_status=FAILED)
+        payload = build_esewa_payload(order, config)
+    except Exception as exc:
+        logger.error("eSewa payload build failed for order %s: %s", order.id, exc)
         return Response(
-            {"success": False, "result": FAILED, "message": "Could not generate the FonePay QR."},
-            status=status.HTTP_502_BAD_GATEWAY,
-        )
-    except FonepayError as exc:
-        logger.error("FonePay error for order %s: %s", order.id, exc)
-        return Response(
-            {"success": False, "result": FAILED, "message": "Could not generate the FonePay QR."},
+            {"error": "Could not build eSewa payment payload."},
             status=status.HTTP_502_BAD_GATEWAY,
         )
 
-    logger.info("FonePay QR generated for order %s (prn=%s)", order.id, prn)
-
-    websocket_url = qr_data.get("websocket_url") or ""
-    if websocket_url:
-        # Kick off real-time payment monitoring in the background. Order is
-        # confirmed automatically when FonePay reports payment success.
-        FonepayRealtimeMonitor().start(order.id, prn, websocket_url)
-        logger.info("FonePay realtime monitoring started for order %s", order.id)
-
-    return Response(
-        {
-            "success": True,
-            "result": PENDING,
-            "message": "FonePay QR generated — scan and pay with the FonePay app.",
-            "order_id": str(order.id),
-            "prn": prn,
-            "amount": str(order.total),
-            "qr": qr_data["qr"],
-            "qr_message": qr_data["qr_message"],
-            "realtime": bool(websocket_url),
-            "payment_status": "pending",
-        },
-        status=status.HTTP_200_OK,
+    # Persist the transaction_uuid on the order for later callback matching.
+    Order.objects.filter(pk=order.pk).update(
+        transaction_uuid=payload["transaction_uuid"],
+        payment_status="pending",
     )
 
+    logger.info(
+        "eSewa payment initiated for order %s (uuid=%s)",
+        order.id,
+        payload["transaction_uuid"],
+    )
 
-@api_view(["POST"])
+    return Response(payload, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
 @permission_classes([permissions.AllowAny])
-def fonepay_check_status(request):
-    """Check the FonePay payment status for a PRN and confirm the order idempotently."""
-    prn = request.data.get("prn")
-    if not prn:
+def esewa_callback(request):
+    """Process the eSewa redirect callback after payment completion.
+
+    eSewa redirects to our success_url with a ``data`` query parameter
+    containing base64-encoded JSON. We decode, verify the signature, and
+    mark the order paid if status is COMPLETE.
+    """
+    encoded_data = request.query_params.get("data")
+    if not encoded_data:
         return Response(
-            {"error": "prn is required."}, status=status.HTTP_400_BAD_REQUEST
+            {"error": "Missing callback data."}, status=status.HTTP_400_BAD_REQUEST
         )
 
-    order = Order.objects.filter(prn=prn).first()
+    try:
+        callback_data = decode_esewa_callback(encoded_data)
+    except ValueError as exc:
+        logger.warning("Invalid eSewa callback data: %s", exc)
+        return Response(
+            {"error": "Invalid callback data."}, status=status.HTTP_400_BAD_REQUEST
+        )
+
+    transaction_uuid = callback_data.get("transaction_uuid", "")
+    order = Order.objects.filter(transaction_uuid=transaction_uuid).first()
     if order is None:
+        logger.warning(
+            "eSewa callback for unknown transaction_uuid: %s", transaction_uuid
+        )
         return Response(
-            {"error": "No order found for this PRN."}, status=status.HTTP_404_NOT_FOUND
+            {"error": "No order found for this transaction."},
+            status=status.HTTP_404_NOT_FOUND,
         )
 
+    # Idempotent: if already paid, just return current state.
     if order.is_paid and order.status == "confirmed":
+        logger.info(
+            "eSewa callback for already-paid order %s — idempotent skip", order.id
+        )
         return Response(
             {
-                "success": True,
-                "result": SUCCESS,
-                "message": "Payment successful",
-                "prn": prn,
-                "payment_status": order.payment_status or "COMPLETED",
-                "is_paid": True,
-                "order_status": order.status,
-                "gateway_reference": order.gateway_reference,
+                "status": order.payment_status or "COMPLETE",
+                "message": "Payment already confirmed.",
+                "order_id": str(order.id),
             },
             status=status.HTTP_200_OK,
         )
 
-    client, error_message = _client_or_error(request)
-    if error_message is not None:
-        return Response(
-            {"success": False, "result": FAILED, "message": error_message},
-            status=status.HTTP_502_BAD_GATEWAY,
-        )
-
+    # Verify signature.
     try:
-        status_json = client.check_status(prn)
-    except FonepayError as exc:
-        logger.error("FonePay status check failed for prn %s: %s", prn, exc)
+        config = EsewaConfig.from_settings()
+    except EsewaConfigurationError as exc:
+        logger.error("eSewa not configured: %s", exc)
         return Response(
-            {
-                "success": False,
-                "result": FAILED,
-                "message": "Could not confirm payment status with FonePay.",
-            },
-            status=status.HTTP_502_BAD_GATEWAY,
+            {"error": "eSewa is not configured."}, status=status.HTTP_502_BAD_GATEWAY
         )
 
-    result, message = interpret_status(status_json)
-    status_raw = str(status_json.get("paymentStatus", "")).lower()
-    Order.objects.filter(pk=order.pk).update(payment_status=status_raw)
-
-    if result == SUCCESS:
-        confirm_paid_order(order, status_json)
-        logger.info("FonePay payment confirmed for prn %s (order %s)", prn, order.id)
+    if not verify_esewa_signature(callback_data, config.secret_key):
+        logger.warning(
+            "eSewa callback signature verification failed for order %s", order.id
+        )
         return Response(
-            {
-                "success": True,
-                "result": SUCCESS,
-                "message": message,
-                "prn": prn,
-                "payment_status": status_raw,
-                "is_paid": True,
-                "order_status": order.status,
-                "gateway_reference": order.gateway_reference,
-            },
-            status=status.HTTP_200_OK,
+            {"error": "Invalid signature."}, status=status.HTTP_400_BAD_REQUEST
         )
 
-    order.refresh_from_db()
+    payment_status = callback_data.get("status", "")
+    transaction_code = callback_data.get("transaction_code", "")
+
+    if payment_status == "COMPLETE":
+        order.mark_gateway_confirmed(
+            gateway_reference=transaction_code,
+            status=payment_status,
+        )
+        logger.info(
+            "eSewa payment confirmed for order %s (code=%s)",
+            order.id,
+            transaction_code,
+        )
+    else:
+        Order.objects.filter(pk=order.pk).update(payment_status=payment_status)
+        logger.info(
+            "eSewa payment not complete for order %s (status=%s)",
+            order.id,
+            payment_status,
+        )
+
     return Response(
         {
-            "success": False,
-            "result": result,
-            "message": message,
-            "prn": prn,
-            "payment_status": status_raw,
-            "is_paid": order.is_paid,
-            "order_status": order.status,
-            "gateway_reference": order.gateway_reference,
+            "status": payment_status,
+            "message": f"Payment {payment_status.lower()}.",
+            "order_id": str(order.id),
         },
         status=status.HTTP_200_OK,
     )
@@ -215,79 +188,101 @@ def fonepay_check_status(request):
 
 @api_view(["POST"])
 @permission_classes([permissions.AllowAny])
-def fonepay_tax_refund(request):
-    """Post a FonePay tax refund for a successful, confirmed FonePay order."""
-    order_id = request.data.get("order_id")
-    invoice_number = request.data.get("invoice_number") or ""
-    invoice_date = request.data.get("invoice_date") or ""
-    transaction_amount = request.data.get("transaction_amount")
+def esewa_check_status(request):
+    """Query eSewa's transaction status API to verify payment independently.
 
+    Accepts ``order_id`` to look up the order, then calls eSewa's
+    ``/api/epay/transaction/status/`` endpoint with the order's transaction
+    details. On COMPLETE, marks the order paid.
+    """
+    order_id = request.data.get("order_id")
     if not order_id:
         return Response(
             {"error": "order_id is required."}, status=status.HTTP_400_BAD_REQUEST
         )
     order = _get_order_or_404(order_id)
 
-    if not is_fonepay_payment(order):
-        return Response(
-            {"error": "Order is not a FonePay payment."},
-            status=status.HTTP_400_BAD_REQUEST,
+    # Idempotent: already paid — just return current state.
+    if order.is_paid and order.status == "confirmed":
+        logger.info(
+            "eSewa status check for already-paid order %s — idempotent", order.id
         )
-    if not order.is_paid or not order.gateway_reference:
         return Response(
-            {"error": "Only a paid FonePay order with a trace ID can be refunded."},
-            status=status.HTTP_400_BAD_REQUEST,
+            {
+                "status": order.payment_status or "COMPLETE",
+                "is_paid": True,
+                "order_id": str(order.id),
+                "gateway_reference": order.gateway_reference,
+            },
+            status=status.HTTP_200_OK,
         )
-    if not invoice_number:
-        return Response(
-            {"error": "invoice_number is required."}, status=status.HTTP_400_BAD_REQUEST
-        )
-    if not invoice_date:
-        return Response(
-            {"error": "invoice_date is required (YYYY-MM-DD)."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    # Amount defaults to the order total unless explicitly overridden.
-    amount = transaction_amount or str(order.total)
 
-    client, error_message = _client_or_error(request)
-    if error_message is not None:
+    if not order.transaction_uuid:
         return Response(
-            {"success": False, "message": error_message},
-            status=status.HTTP_502_BAD_GATEWAY,
+            {"error": "Order has no transaction UUID — payment was not initiated."},
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
     try:
-        result = client.tax_refund(
-            fonepay_trace_id=order.gateway_reference,
-            transaction_amount=amount,
-            merchant_prn=order.prn,
-            invoice_number=invoice_number,
-            invoice_date=invoice_date,
-        )
-    except FonepayError as exc:
-        logger.error("FonePay tax refund failed for order %s: %s", order.id, exc)
+        config = EsewaConfig.from_settings()
+    except EsewaConfigurationError as exc:
+        logger.error("eSewa not configured: %s", exc)
         return Response(
-            {"success": False, "message": "Could not post the FonePay tax refund."},
+            {"error": "eSewa is not configured."}, status=status.HTTP_502_BAD_GATEWAY
+        )
+
+    # Query eSewa status-check API.
+    try:
+        resp = http_requests.get(
+            config.status_check_url,
+            params={
+                "product_code": config.merchant_code,
+                "total_amount": str(order.total),
+                "transaction_uuid": order.transaction_uuid,
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        status_data = resp.json()
+    except http_requests.RequestException as exc:
+        logger.error("eSewa status check failed for order %s: %s", order.id, exc)
+        return Response(
+            {"error": "Could not query eSewa status."},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+    except ValueError as exc:
+        logger.error("eSewa returned non-JSON for order %s: %s", order.id, exc)
+        return Response(
+            {"error": "Invalid response from eSewa."},
             status=status.HTTP_502_BAD_GATEWAY,
         )
 
-    refund_success = bool(result.get("success"))
-    logger.info(
-        "FonePay tax refund %s for order %s (trace %s)",
-        "succeeded" if refund_success else "reported failure",
-        order.id,
-        order.gateway_reference,
-    )
+    payment_status = status_data.get("status", "")
+    ref_id = status_data.get("ref_id", "")
+
+    if payment_status == "COMPLETE":
+        order.mark_gateway_confirmed(
+            gateway_reference=ref_id,
+            status=payment_status,
+        )
+        logger.info(
+            "eSewa payment confirmed via status check for order %s (ref=%s)",
+            order.id,
+            ref_id,
+        )
+    else:
+        Order.objects.filter(pk=order.pk).update(payment_status=payment_status)
+        logger.info(
+            "eSewa status check for order %s: %s", order.id, payment_status
+        )
+
+    order.refresh_from_db()
     return Response(
         {
-            "success": refund_success,
-            "message": result.get("message") or (
-                "Tax refund posted." if refund_success else "Tax refund was rejected."
-            ),
-            "fonepay_trace_id": result.get("fonepayTraceId")
-            or result.get("fonepay_trace_id")
-            or order.gateway_reference,
+            "status": payment_status,
+            "is_paid": order.is_paid,
+            "order_id": str(order.id),
+            "gateway_reference": order.gateway_reference,
         },
         status=status.HTTP_200_OK,
     )

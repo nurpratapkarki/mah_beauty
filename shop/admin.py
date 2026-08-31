@@ -68,10 +68,10 @@ class OrderItemInline(admin.TabularInline):
 
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
-    list_display = ("id", "customer_name", "payment_method", "status", "is_paid", "total", "created_at")
+    list_display = ("id", "customer_name", "email", "payment_method", "status", "is_paid", "total", "gateway_reference", "payment_status", "created_at")
     list_filter = ("status", "payment_method", "is_paid")
-    search_fields = ("customer_name", "contact_info", "id")
-    readonly_fields = ("id", "created_at", "updated_at")
+    search_fields = ("customer_name", "contact_info", "email", "id")
+    readonly_fields = ("id", "created_at", "updated_at", "gateway_reference", "payment_status")
     inlines = [OrderItemInline]
     actions = ["mark_confirmed", "mark_fulfilled", "mark_paid"]
 
@@ -85,7 +85,12 @@ class OrderAdmin(admin.ModelAdmin):
 
     @admin.action(description="Mark selected orders as Paid")
     def mark_paid(self, request, queryset):
-        queryset.update(is_paid=True)
+        from .services.email import send_payment_emails
+        for order in queryset.filter(is_paid=False):
+            order.is_paid = True
+            order.payment_status = "completed"
+            order.save(update_fields=["is_paid", "payment_status"])
+            send_payment_emails(order)
 
 
 @admin.register(Review)

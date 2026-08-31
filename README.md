@@ -53,48 +53,41 @@ API root: `/api/`
 | `/api/wishlists/`               | extra action: `mine/` (GET current user's wishlist, POST to add a variant)                                                     |
 | `/api/carts/`                   | extra actions: `mine/` (resolve current user or guest cart), `add_item/`, `remove_item/`                                       |
 | `/api/orders/`                  | guest checkout allowed; extra actions: `cancel/`, `my_orders/` (authenticated)                                                 |
-| `/api/payments/fonepay/qr/`     | `POST` — generate a FonePay dynamic QR for an order (see Payment Integration)                                                  |
-| `/api/payments/fonepay/status/` | `POST` — check FonePay status and confirm an order                                                                             |
+| `/api/payments/esewa/initiate/` | `POST` — build the signed eSewa payment payload for an order (see Payment Integration)                                        |
+| `/api/payments/esewa/callback/` | `GET` — confirm an order from the eSewa redirect callback                                                                      |
+| `/api/payments/esewa/status/`   | `POST` — check eSewa transaction status and confirm an order (fallback to callback)                                            |
 | `/api/reviews/`                 | filter by `product`                                                                                                            |
 | `/api/blog/`                    | lookup by `slug` instead of id                                                                                                 |
 
 ## Payment Integration
 
-The backend supports **FonePay dynamic QR** (live gateway) and **Cash on Delivery (COD)**, plus
-the legacy manual channels (WhatsApp / Instagram). eSewa / Khalti remain reserved (not wired).
+The backend supports **eSewa** (live gateway, redirect-based) and **Cash on Delivery (COD)**, plus
+the legacy manual channels (WhatsApp / Instagram). Khalti remains reserved (not wired).
 
-### FonePay Dynamic QR
+### eSewa (redirect gateway)
 
-`Order.payment_method` includes `fonepay`. Config is read from `.env` (see `mah_beauty_project/
-settings.py`); nothing secret lives in versioned code.
+`Order.payment_method` includes `esewa`. Config is read from `.env` (see `mah_beauty_project/
+settings.py`); nothing secret lives in versioned code. Sandbox defaults are provided via
+`ESEWA_MERCHANT_CODE=EPAYTEST`, `ESEWA_SECRET_KEY`, `ESEWA_SANDBOX=True`, and the sandbox payment
+/ status URLs.
 
-- `POST /api/payments/fonepay/qr/` — body `{ "order_id": "<uuid>" }`. Validates the order is a
-  `fonepay` payment, not paid, and has a positive total; records the PRN and returns a QR to
-  render.
-  Response: `{ order_id, prn, amount, qr, qr_message, realtime, payment_status }`.
-- `POST /api/payments/fonepay/status/` — body `{ "prn": "<prn>" }`. Queries FonePay and, on
-  `COMPLETED`, sets `is_paid=True`, `gateway_reference=fonepayTraceId`, transitions `status` to
-  `confirmed`. Idempotent — safe to re-check.
-- `POST /api/payments/fonepay/refund/` — body `{ "order_id": "<uuid>", "invoice_number": "...",
-"invoice_date": "YYYY-MM-DD", "transaction_amount"? }`. Posts a FonePay tax refund for a paid
-  FonePay order (uses `order.gateway_reference` as the trace ID and `order.prn` as the merchant
-  PRN; amount defaults to the order total).
+- `POST /api/payments/esewa/initiate/` — body `{ "order_id": "<uuid>" }`. Validates the order is
+  an `esewa` payment, not paid, and has a positive total; generates a `transaction_uuid`, builds
+  the HMAC-SHA256-signed form payload, and returns the fields plus the eSewa payment URL. The
+  frontend auto-submits a hidden form to that URL.
+  Response: `{ esewa_url, fields, ... }` where `fields` includes `amt`, `tAmt`, `pdc`, `txAmt`,
+  `psc`, `scd`, `pid`, `su`, `fu`, `transaction_uuid`, `signed_field_names`, `signature`.
+- `GET /api/payments/esewa/callback/` — eSewa redirects here with a base64-encoded `data` query
+  param after payment. The backend decodes, verifies the signature, and on `COMPLETE` sets
+  `is_paid=True`, `gateway_reference=transaction_code`, and transitions `status` to `confirmed`.
+  Idempotent — safe on repeats.
+- `POST /api/payments/esewa/status/` — body `{ "order_id": "<uuid>" }`. Queries eSewa's
+  `/api/epay/transaction/status/` endpoint with the order's `transaction_uuid` and, on `COMPLETE`,
+  confirms the order. Used as a fallback when the redirect callback is lost.
 
-**Tax refund QR generation**: `FonepayClient.generate_qr()` accepts optional `tax_amount` /
-`tax_refund`, which extend the HMAC message (`AMOUNT,PRN,MERCHANT-CODE,REMARKS1,REMARKS2,
-TAXAMOUNT,TAXREFUND`) and add `taxAmount`/`taxRefund` to the request payload. When omitted,
-the fields are not sent.
-
-**Real-time auto-verification**: when FonePay returns a `thirdpartyQrWebSocketUrl` on QR
-generation, the backend opens that socket in a background thread and listens for
-`transactionStatus` messages. On `paymentSuccess` it cross-checks against
-`thirdPartyDynamicQrGetStatus` and confirms the order automatically — no frontend polling
-needed. The status endpoint remains as a fallback. Real-time monitoring requires the
-`websockets` package (a runtime dependency).
-
-The FonePay integration lives in a self-contained `shop/payments/` module — client, config,
-errors, shared domain helpers (`get_client`, `confirm_paid_order`, `is_fonepay_payment`, etc.),
-realtime monitor, and dedicated API views — fully separated from `shop/views.py`.
+The eSewa integration lives in a self-contained `shop/payments/` module — config, errors, shared
+signature/payload helpers (`build_esewa_payload`, `verify_esewa_signature`), and dedicated API
+views — fully separated from `shop/views.py`.
 
 ### Cash on Delivery (COD)
 
@@ -104,15 +97,36 @@ admin (`/admin/`) using the existing "Mark selected orders as Paid/Confirmed/Ful
 
 ### Payment fields on `Order`
 
-- `gateway_reference` — FonePay trace ID for gateway payments.
-- `is_paid` — auto set `True` on FonePay confirmation; manually via admin for COD/manual orders.
-- `prn` / `payment_status` — FonePay payment reference number and last known status.
-- `is_gateway_payment` — `True` for `fonepay`, `esewa`, `khalti`; `False` for COD and manual.
+- `gateway_reference` — eSewa `transaction_code` (or `ref_id` from status check) for gateway
+  payments.
+- `transaction_uuid` — unique transaction identifier generated at initiate, used for eSewa
+  callback matching and status lookup.
+- `is_paid` — auto set `True` on eSewa confirmation; manually via admin for COD/manual orders.
+- `payment_status` — last known gateway status (`pending`, `COMPLETE`, `failed`, etc.).
+- `is_gateway_payment` — `True` for `esewa`, `khalti`; `False` for COD and manual.
 
 ### Reserved gateways
 
-eSewa and Khalti remain selectable values so the schema supports them later; wiring them would
-reuse the same `gateway_reference` / `is_paid` contract with a small gateway module.
+Khalti remains a selectable value so the schema supports it later; wiring it would reuse the same
+`gateway_reference` / `is_paid` contract with a small gateway module.
+
+### Transactional Email
+
+Order and payment notifications are sent through Django's configured mailer:
+
+- **Order confirmation** to the customer, and **new-order** notification to the admin — fired
+  automatically when the first line item is added to an order (`post_save` signal on `OrderItem`).
+- **Payment success** to the customer, and **payment-received** notification to the admin — fired
+  on gateway confirmation (`Order.mark_gateway_confirmed`) and when the admin marks an order paid.
+
+The customer email comes from `Order.email` (new field, captured at checkout). Admin notifications
+go to `DJANGO_ADMIN_EMAIL` and are skipped when it's unset. Emails are built in
+`shop/services/email.py` from HTML + plain-text templates in `shop/templates/email/`.
+
+Sending failures are logged, never raised — a broken mail backend cannot break ordering. Dev uses
+the console backend (emails print to stdout); production sets `DJANGO_EMAIL_BACKEND` to an SMTP
+backend plus `DJANGO_EMAIL_HOST`, `DJANGO_EMAIL_PORT`, `DJANGO_EMAIL_HOST_USER`,
+`DJANGO_EMAIL_HOST_PASSWORD`, `DJANGO_EMAIL_USE_TLS` in `.env`.
 
 ## Other Assumptions
 
@@ -145,7 +159,7 @@ ProductVariant: product(FK:Product,related=variants) shade_or_size(str,max=100) 
 Wishlist: user(O2O:User) variants(M2M:ProductVariant)
 Cart: user(O2O:User,null) session_key(str,blank,max=100)
 CartItem: cart(FK:Cart,related=items) variant(FK:ProductVariant) quantity(int,default=1)
-Order: user(FK:User,null) customer_name(str,max=150) contact_info(str,max=150) shipping_address_line(str,max=255) shipping_city(str,max=100) shipping_landmark(str,max=255,blank) total(decimal,max=10,dec=2) payment_method(choice:esewa,khalti,whatsapp,instagram) status(choice:pending,confirmed,fulfilled) created_at(auto)
+Order: user(FK:User,null) customer_name(str,max=150) contact_info(str,max=150) email(email,blank) shipping_address_line(str,max=255) shipping_city(str,max=100) shipping_landmark(str,max=255,blank) total(decimal,max=10,dec=2) payment_method(choice:esewa,khalti,whatsapp,instagram) status(choice:pending,confirmed,fulfilled) created_at(auto)
 OrderItem: order(FK:Order,related=items) variant(FK:ProductVariant) quantity(int) price(decimal,max=10,dec=2)
 Review: product(FK:Product,related=reviews) reviewer_name(str,max=150) rating(int) review_text(text) created_at(auto)
 BlogPost: slug(slug) title(str,max=200) excerpt(str,max=300) content(text) cover_image(image) published_at(datetime)

@@ -1,7 +1,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
-from .payments.views import fonepay_check_status, fonepay_generate_qr, fonepay_tax_refund
+from .payments.views import esewa_callback, esewa_check_status, esewa_initiate
 from .views import (
     BlogPostViewSet, CartViewSet, CategoryViewSet, OrderViewSet,
     ProductVariantViewSet, ProductViewSet, ReviewViewSet, WishlistViewSet,
@@ -18,8 +18,8 @@ router.register(r"reviews", ReviewViewSet, basename="review")
 router.register(r"blog", BlogPostViewSet, basename="blogpost")
 
 urlpatterns = router.urls + [
-    path("payments/fonepay/qr/", fonepay_generate_qr, name="fonepay-qr"),
-    path("payments/fonepay/status/", fonepay_check_status, name="fonepay-status"),
-    path("payments/fonepay/refund/", fonepay_tax_refund, name="fonepay-refund"),
+    path("payments/esewa/initiate/", esewa_initiate, name="esewa-initiate"),
+    path("payments/esewa/callback/", esewa_callback, name="esewa-callback"),
+    path("payments/esewa/status/", esewa_check_status, name="esewa-status"),
 ]
 
