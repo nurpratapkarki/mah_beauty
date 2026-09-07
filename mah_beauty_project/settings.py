@@ -6,7 +6,7 @@ import environ
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 env = environ.Env(
-    DEBUG=(bool, False),
+    DEBUG=(bool, True),
     ALLOWED_HOSTS=(list, []),
 )
 environ.Env.read_env(BASE_DIR / ".env")
@@ -17,7 +17,7 @@ SECRET_KEY = env("DJANGO_SECRET_KEY", default="django-insecure-__CHANGE_ME__")
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env("DJANGO_DEBUG", default=False)
 
-ALLOWED_HOSTS = env("DJANGO_ALLOWED_HOSTS", default=[])
+ALLOWED_HOSTS = env("DJANGO_ALLOWED_HOSTS", default=["*"])
 
 # Application definition
 INSTALLED_APPS = [
@@ -39,12 +39,14 @@ INSTALLED_APPS = [
     'dj_rest_auth',
     'dj_rest_auth.registration',
     'rest_framework_simplejwt.token_blacklist',
+    'corsheaders',
     # Local
     'shop',
     'accounts.apps.AccountsConfig',
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -165,7 +167,7 @@ REST_FRAMEWORK = {
         'rest_framework.filters.OrderingFilter',
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-    'PAGE_SIZE': 10,
+    'PAGE_SIZE': 100,
     # FR-015: backoff-not-lockout anon throttling on auth endpoints.
     # dj-rest-auth sets throttle_scope="dj_rest_auth" on login/google/reset.
     'DEFAULT_THROTTLE_CLASSES': [
@@ -270,3 +272,14 @@ JAZZMIN_UI_TWEAKS = {
         "success": "btn-success",
     },
 }
+
+# ── CORS ────────────────────────────────────────────────────────────────────
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOWED_ORIGINS = env.list(
+    "CORS_ALLOWED_ORIGINS",
+    default=[
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://localhost:4173",
+    ],
+)

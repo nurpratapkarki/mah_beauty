@@ -8,7 +8,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from .models import (
-    BlogPost, Cart, CartItem, Category, Order, Product,
+    BlogPost, Cart, CartItem, Category, Order, OrderItem, Product,
     ProductVariant, Review, Wishlist,
 )
 from .serializers import (
@@ -30,7 +30,7 @@ class ProductViewSet(viewsets.ModelViewSet):
     serializer_class = ProductSerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ["category", "is_featured", "is_best_seller"]
+    filterset_fields = ["category", "is_featured", "is_best_seller", "slug"]
     search_fields = ["name", "short_descriptor", "description"]
 
     def get_queryset(self):
@@ -144,6 +144,29 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return Order.objects.all().prefetch_related("items__variant")
+
+    def create(self, request, *args, **kwargs):
+        # Items are transient (read-only) on the serializer; pop them out so the
+        # Order row is created first, then the line items (which fire the stock
+        # decrement + order-email signals via post_save).
+        data = request.data.copy()
+        items_data = data.pop("items", [])
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        order = serializer.save()
+        for item in items_data:
+            OrderItem.objects.create(
+                order=order,
+                variant_id=item["variant"],
+                quantity=item["quantity"],
+                price=item["price"],
+            )
+        headers = self.get_success_headers(serializer.data)
+        return Response(
+            self.get_serializer(order).data,
+            status=status.HTTP_201_CREATED,
+            headers=headers,
+        )
 
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):

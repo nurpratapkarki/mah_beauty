@@ -53,9 +53,12 @@ class LoginSerializer(serializers.Serializer):
 
 
 class RegisterSerializer(DJRegisterSerializer):
-    """Registration with a required, normalized phone_number (FR-003/FR-004)."""
+    """Registration with an optional, normalized phone_number (FR-003/FR-004)."""
 
     phone_number = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
         help_text=_('Phone number, normalized to E.164, e.g. +9779811000000.'),
     )
 
@@ -68,6 +71,8 @@ class RegisterSerializer(DJRegisterSerializer):
         return email
 
     def validate_phone_number(self, value):
+        if value in (None, ''):
+            return None
         phone = normalize_phone(value)
         if phone is None:
             raise serializers.ValidationError(_('Enter a valid phone number.'))

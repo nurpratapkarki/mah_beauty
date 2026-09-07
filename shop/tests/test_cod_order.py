@@ -30,6 +30,9 @@ def test_create_order_with_cod(variant):
     assert body["payment_method"] == "cod"
     assert body["is_gateway_payment"] is False
     assert body["is_paid"] is False
+    assert len(body["items"]) == 1
+    assert body["items"][0]["variant"] == variant.id
+    assert Order.objects.get(id=body["id"]).items.count() == 1
 
 
 def test_cod_order_is_not_gateway_payment(variant):

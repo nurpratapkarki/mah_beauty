@@ -156,9 +156,8 @@ class CartItem(models.Model):
 class PaymentMethod(models.TextChoices):
     COD = "cod", "Cash on Delivery"
     ESEWA = "esewa", "eSewa"
+    FONEPAY = "fonepay", "Fonepay"
     KHALTI = "khalti", "Khalti"
-    WHATSAPP = "whatsapp", "WhatsApp"
-    INSTAGRAM = "instagram", "Instagram"
 
 
 class OrderStatus(models.TextChoices):
@@ -169,12 +168,9 @@ class OrderStatus(models.TextChoices):
 
 class Order(models.Model):
     """
-    payment_method currently only WhatsApp/Instagram are "live" — eSewa and Khalti
-    exist as selectable values so the frontend can show them (disabled/"coming soon")
-    without a future schema change. When gateway integration is switched on:
-      - start populating gateway_reference with the provider's transaction/payment ID
-      - is_gateway_payment / is_paid can drive real payment-confirmed logic
-      - no migration needed beyond possibly making gateway_reference required
+    payment_method: COD is the live option. eSewa and Fonepay are wired
+    server-side but disabled on the frontend ("Coming soon") until sandbox
+    testing is complete. Khalti is a placeholder only.
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(
@@ -229,6 +225,7 @@ class Order(models.Model):
     def is_gateway_payment(self):
         return self.payment_method in (
             PaymentMethod.ESEWA,
+            PaymentMethod.FONEPAY,
             PaymentMethod.KHALTI,
         )
 
